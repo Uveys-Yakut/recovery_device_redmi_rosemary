@@ -7,63 +7,82 @@ on:
         description: 'TWRP Manifest Branch (twrp-12.1 veya twrp-11)'
         required: true
         default: 'twrp-12.1'
+      build_target:
+        description: 'Build Target (bootimage, vendorbootimage veya recoveryimage)'
+        required: true
+        default: 'bootimage'
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-      - name: Maximize Build Space
-        uses: easimon/maximize-build-space@master
-        with:
-          root-reserve-mb: 4096
-          swap-size-mb: 4096
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
+      - name: Maximize Build Space & Prepare /mnt
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/.ghcup
+          sudo docker image prune --all --force || true
+          sudo mkdir -p /mnt/twrp
+          sudo chown -R $USER:$USER /mnt/twrp
+          df -h
 
-      - name: Install Dependencies
+      - name: Install Build Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 git-lfs
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ccache curl flex g++-multilib gcc-multilib \
+            git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev \
+            lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev \
+            libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool \
+            squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 git-lfs
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Setup Repo Tool
+      - name: Configure Git & Repo Tool
         run: |
           mkdir -p ~/bin
-          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
           chmod a+x ~/bin/repo
           echo "$HOME/bin" >> $GITHUB_PATH
-          git config --global user.name "Builder"
-          git config --global user.email "builder@example.com"
+          git config --global user.name "TWRP Builder"
+          git config --global user.email "builder@github.local"
+          git config --global color.ui false
 
-      - name: Initialize & Sync TWRP Manifest
+      - name: Initialize & Sync TWRP Manifest on /mnt
         run: |
-          mkdir -p ~/twrp && cd ~/twrp
+          cd /mnt/twrp
           repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }}
-          repo sync -c --no-clone-bundle --no-tags -j$(nproc --all)
+          repo sync -c --no-clone-bundle --no-tags --optimized-fetch --prune -j$(nproc --all)
+          # Disk alanından tasarruf etmek için .repo geçmiş nesnelerini temizle
+          rm -rf .repo/projects/*/.git/logs .repo/project-objects/*/*.git/logs
+          df -h
 
       - name: Clone Device Tree
         run: |
-          cd ~/twrp
+          cd /mnt/twrp
           git clone https://github.com/${{ github.repository }}.git device/redmi/rosemary
-          # Eğer tree device/xiaomi/rosemary yolunu bekliyorsa sembolik bağ oluştur
           mkdir -p device/xiaomi
-          ln -s ~/twrp/device/redmi/rosemary device/xiaomi/rosemary
+          ln -s /mnt/twrp/device/redmi/rosemary device/xiaomi/rosemary
 
       - name: Build TWRP Image
         run: |
-          cd ~/twrp
+          cd /mnt/twrp
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+
           if [ -f device/redmi/rosemary/twrp_rosemary.mk ]; then
             lunch twrp_rosemary-eng
-          else
+          elif [ -f device/redmi/rosemary/omni_rosemary.mk ]; then
             lunch omni_rosemary-eng
+          else
+            echo "Hata: AndroidProducts.mk icindeki urun dosyasi bulunamadi!"
+            exit 1
           fi
-          mka bootimage -j$(nproc --all)
 
-      - name: Upload TWRP Artifact
+          mka ${{ github.event.inputs.build_target }} -j$(nproc --all)
+
+      - name: Upload Compiled Image Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: TWRP-rosemary-${{ github.run_number }}
-          path: ~/twrp/out/target/product/rosemary/*.img
+          name: TWRP-rosemary-${{ github.event.inputs.manifest_branch }}-${{ github.run_number }}
+          path: /mnt/twrp/out/target/product/rosemary/*.img
+          if-no-files-found: error
