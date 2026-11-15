@@ -1,0 +1,69 @@
+name: Build TWRP for Rosemary
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_branch:
+        description: 'TWRP Manifest Branch (twrp-12.1 veya twrp-11)'
+        required: true
+        default: 'twrp-12.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 4096
+          swap-size-mb: 4096
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3 python-is-python3 git-lfs
+
+      - name: Setup Repo Tool
+        run: |
+          mkdir -p ~/bin
+          curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> $GITHUB_PATH
+          git config --global user.name "Builder"
+          git config --global user.email "builder@example.com"
+
+      - name: Initialize & Sync TWRP Manifest
+        run: |
+          mkdir -p ~/twrp && cd ~/twrp
+          repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b ${{ github.event.inputs.manifest_branch }}
+          repo sync -c --no-clone-bundle --no-tags -j$(nproc --all)
+
+      - name: Clone Device Tree
+        run: |
+          cd ~/twrp
+          git clone https://github.com/${{ github.repository }}.git device/redmi/rosemary
+          # Eğer tree device/xiaomi/rosemary yolunu bekliyorsa sembolik bağ oluştur
+          mkdir -p device/xiaomi
+          ln -s ~/twrp/device/redmi/rosemary device/xiaomi/rosemary
+
+      - name: Build TWRP Image
+        run: |
+          cd ~/twrp
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          if [ -f device/redmi/rosemary/twrp_rosemary.mk ]; then
+            lunch twrp_rosemary-eng
+          else
+            lunch omni_rosemary-eng
+          fi
+          mka bootimage -j$(nproc --all)
+
+      - name: Upload TWRP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: TWRP-rosemary-${{ github.run_number }}
+          path: ~/twrp/out/target/product/rosemary/*.img
