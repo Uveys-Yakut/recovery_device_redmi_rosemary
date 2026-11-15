@@ -59,8 +59,6 @@ jobs:
         run: |
           cd /mnt/twrp
           git clone https://github.com/${{ github.repository }}.git device/redmi/rosemary
-          mkdir -p device/xiaomi
-          ln -s /mnt/twrp/device/redmi/rosemary device/xiaomi/rosemary
 
       - name: Build TWRP Image
         run: |
